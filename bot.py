@@ -35,9 +35,9 @@ FILE_CHOICES_RAW = os.getenv("FILE_CHOICES", "")
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не задан. Укажите его в .env")
 
-# Параметры меню
-COLS = 3                # кнопок в строке
-ROWS = 3                # строк на страницу
+# Параметры меню (3 колонки × 3 строки = 9 материалов на страницу)
+COLS = 3
+ROWS = 3
 PAGE_SIZE = COLS * ROWS
 
 # Глобальные объекты (бот создадим внутри main)
@@ -46,7 +46,7 @@ dp = Dispatcher()
 
 # ----------------- парсинг списка файлов -----------------
 # Пример в .env:
-# FILE_CHOICES=Материал|./material.pdf;Чек-лист|./checklist.pdf;Медитация|./audio.mp3
+# FILE_CHOICES=Опора|./Опора.png; Чек-лист|./checklist.pdf; Медитация|./audio.mp3
 FILE_CHOICES: List[Tuple[str, str]] = []
 if FILE_CHOICES_RAW.strip():
     for chunk in FILE_CHOICES_RAW.split(";"):
@@ -71,7 +71,7 @@ CB_BACK_MAIN = "back_main"   # вернуться к экрану с «Смот�
 
 # ----------------- клавиатуры -----------------
 def make_main_kb() -> InlineKeyboardMarkup:
-    """Основной экран со стартовой проверкой подписки."""
+    """Экран старта: проверка подписки."""
     kb = [
         [InlineKeyboardButton(text="Проверить подписку", callback_data="check_sub")],
         [InlineKeyboardButton(text="Подписаться на канал", url=CHANNEL_URL)],
@@ -79,25 +79,23 @@ def make_main_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 def make_after_check_kb() -> InlineKeyboardMarkup:
-    """После успешной проверки — одна кнопка «Смотреть материалы»."""
-    kb = [
-        [InlineKeyboardButton(text="📚 Смотреть материалы", callback_data=CB_VIEW)],
-    ]
+    """После успешной проверки — кнопка «Смотреть материалы»."""
+    kb = [[InlineKeyboardButton(text="📚 Смотреть материалы", callback_data=CB_VIEW)]]
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 def paginate_kb(items: List[Tuple[str, str]], page: int) -> InlineKeyboardMarkup:
-    """Меню материалов с пагинацией: 3 кнопки в ряд, PAGE_SIZE на страницу."""
+    """Меню материалов с пагинацией: 3 в ряд, PAGE_SIZE на страницу."""
     total = len(items)
     total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
     page = max(0, min(page, total_pages - 1))
 
     start = page * PAGE_SIZE
     end = min(start + PAGE_SIZE, total)
-    slice_items = items[start:end]
 
     rows: List[List[InlineKeyboardButton]] = []
-    # материал-кнопки (по COLS в строке)
     row: List[InlineKeyboardButton] = []
+
+    # кнопки материалов
     for idx_global in range(start, end):
         title, _path = items[idx_global]
         row.append(InlineKeyboardButton(text=title, callback_data=f"{CB_ITEM}{idx_global}"))
@@ -107,33 +105,16 @@ def paginate_kb(items: List[Tuple[str, str]], page: int) -> InlineKeyboardMarkup
     if row:
         rows.append(row)
 
-    # пагинация
-    nav_row: List[InlineKeyboardButton] = []
-
+    # навигация по страницам
     prev_page = page - 1
     next_page = page + 1
+    rows.append([
+        InlineKeyboardButton(text="◀️", callback_data=f"{CB_PAGE}{prev_page}" if page > 0 else "noop"),
+        InlineKeyboardButton(text=f"Стр. {page+1}/{total_pages}", callback_data="noop"),
+        InlineKeyboardButton(text="▶️", callback_data=f"{CB_PAGE}{next_page}" if page < total_pages-1 else "noop"),
+    ])
 
-    nav_row.append(
-        InlineKeyboardButton(
-            text="◀️ Назад" if page > 0 else "◀️",
-            callback_data=f"{CB_PAGE}{prev_page}" if page > 0 else "noop"
-        )
-    )
-    nav_row.append(
-        InlineKeyboardButton(
-            text=f"Стр. {page+1}/{total_pages}",
-            callback_data="noop"
-        )
-    )
-    nav_row.append(
-        InlineKeyboardButton(
-            text="Вперёд ▶️" if page < total_pages - 1 else "▶️",
-            callback_data=f"{CB_PAGE}{next_page}" if page < total_pages - 1 else "noop"
-        )
-    )
-    rows.append(nav_row)
-
-    # кнопка назад к главному экрану
+    # назад к экрану после проверки
     rows.append([InlineKeyboardButton(text="↩️ Назад", callback_data=CB_BACK_MAIN)])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -166,7 +147,7 @@ async def on_start(message: Message):
 async def on_help(message: Message):
     await message.answer(
         "Нажмите «Проверить подписку». Если подписка подтверждена — нажмите «Смотреть материалы».\n"
-        "Дальше выберите нужный материал из меню (в 3 колонки, с переключением страниц)."
+        "Дальше выберите нужный материал из меню (3 в ряд, с перелистыванием страниц)."
     )
 
 @dp.callback_query(F.data == "check_sub")
@@ -180,7 +161,6 @@ async def on_check_sub(callback: CallbackQuery):
         )
         await callback.answer()
     else:
-        # Просим подписаться и даём кнопку
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="Подписаться на канал", url=CHANNEL_URL)],
@@ -210,11 +190,9 @@ async def change_page(callback: CallbackQuery):
         await callback.answer("Некорректная страница", show_alert=True)
         return
     kb = paginate_kb(FILE_CHOICES, page=page)
-    # редактируем предыдущее сообщение, чтобы не плодить сообщения
     try:
         await callback.message.edit_reply_markup(reply_markup=kb)
     except Exception:
-        # если редактировать нельзя (например, слишком старое сообщение) — отправим новое
         await callback.message.answer("Выберите материал:", reply_markup=kb)
     await callback.answer()
 
@@ -227,7 +205,7 @@ async def back_main(callback: CallbackQuery):
     )
     await callback.answer()
 
-# Отправка выбранного материала
+# Отправка выбранного материала (НИЧЕГО не дописываем к пути!)
 @dp.callback_query(F.data.startswith(CB_ITEM))
 async def send_selected(callback: CallbackQuery):
     data = callback.data
@@ -244,7 +222,7 @@ async def send_selected(callback: CallbackQuery):
     title, path = FILE_CHOICES[idx]
     if os.path.exists(path):
         try:
-            doc = FSInputFile(path)
+            doc = FSInputFile(path)  # путь может быть .png/.pdf/.zip — любой
             await callback.message.answer_document(document=doc, caption=title)
             await callback.answer("Отправлено ✅")
             logger.info(f"Выбран и отправлен файл: {path}")
@@ -256,13 +234,12 @@ async def send_selected(callback: CallbackQuery):
         await callback.message.answer(f"Файл не найден: {path}")
         await callback.answer()
 
-# Тестовая команда — отправляет первый файл
+# Тестовая команда — отправляет первый материал
 @dp.message(Command("sendfile"))
 async def sendfile(message: Message):
     title, path = FILE_CHOICES[0]
     if os.path.exists(path):
-        doc = FSInputFile(path)
-        await message.answer_document(document=doc, caption=title)
+        await message.answer_document(document=FSInputFile(path), caption=title)
     else:
         await message.answer(f"Файл не найден: {path}")
 
