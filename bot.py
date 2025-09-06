@@ -1,4 +1,4 @@
-# bot.py — aiogram v3, меню + пагинация + несколько файлов на одну кнопку
+# bot.py — aiogram v3, меню + пагинация + несколько файлов
 import os
 import asyncio
 import logging
@@ -19,34 +19,20 @@ from aiogram.filters import CommandStart, Command
 from aiogram.client.session.aiohttp import AiohttpSession
 from dotenv import load_dotenv
 
-# ---------- базовая настройка ----------
+# ---------- загрузка .env ----------
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_ID = os.getenv("CHANNEL_ID")  # если не используешь проверку подписки — можно не задавать
-CHANNEL_URL = os.getenv("CHANNEL_URL", "https://t.me/")
-
-# Формат FILE_CHOICES:
-#   "Опора|./Опора.png; Замок|./Замок1.png,./Замок2.png; Мама|./мама.png"
 FILE_CHOICES_RAW = os.getenv("FILE_CHOICES", "")
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не задан")
 
-# меню: 3 кнопки в ряд, 3 строки = 9 элементов на страницу
-COLS = 3
-ROWS = 3
-PAGE_SIZE = COLS * ROWS
-
-# aiogram объекты
-bot: Bot | None = None
-dp = Dispatcher()
-
-# ---------- парсинг материалов ----------
-# Храним как список пар: (название, [список_файлов])
-# Пример элемента: ("Замок", ["./Замок1.png", "./Замок2.png"])
+# ---------- материалы ----------
+# Формат в .env:
+# FILE_CHOICES=Опора|./Опора.png; Замок|./Замок1.png,./Замок2.png; Мама|./мама.png
 MATERIALS: List[Tuple[str, List[str]]] = []
 if FILE_CHOICES_RAW.strip():
     for chunk in FILE_CHOICES_RAW.split(";"):
@@ -59,20 +45,21 @@ if FILE_CHOICES_RAW.strip():
             if paths:
                 MATERIALS.append((title.strip(), paths))
         else:
-            # если без разделителя — считаем, что и заголовок, и путь совпадают
-            p = part.strip()
-            MATERIALS.append((p, [p]))
+            MATERIALS.append((part, [part]))
 
-# fallback, если не задано
 if not MATERIALS:
-    default_path = os.getenv("FILE_PATH", "./material.pdf")
-    MATERIALS = [("Материал", [default_path])]
+    MATERIALS = [("Материал", ["./material.pdf"])]
 
-# ---------- константы callback ----------
-CB_VIEW = "view"          # открыть меню, стр. 0
-CB_PAGE = "page:"         # page:{num}
-CB_ITEM = "item:"         # item:{index}
-CB_BACK = "back_main"     # назад к кнопке "Смотреть материалы"
+# ---------- параметры меню ----------
+COLS = 3
+ROWS = 3
+PAGE_SIZE = COLS * ROWS
+
+# ---------- callback-метки ----------
+CB_VIEW = "view"
+CB_PAGE = "page:"
+CB_ITEM = "item:"
+CB_BACK = "back_main"
 
 # ---------- клавиатуры ----------
 def make_after_check_kb() -> InlineKeyboardMarkup:
@@ -94,7 +81,7 @@ def paginate_kb(items: List[Tuple[str, List[str]]], page: int) -> InlineKeyboard
     row: List[InlineKeyboardButton] = []
 
     for idx in range(start, end):
-        title, _paths = items[idx]
+        title, _ = items[idx]
         row.append(InlineKeyboardButton(text=title, callback_data=f"{CB_ITEM}{idx}"))
         if len(row) == COLS:
             rows.append(row)
@@ -103,32 +90,29 @@ def paginate_kb(items: List[Tuple[str, List[str]]], page: int) -> InlineKeyboard
         rows.append(row)
 
     # навигация
-    prev_page = page - 1
-    next_page = page + 1
     rows.append([
-        InlineKeyboardButton(text="◀️", callback_data=f"{CB_PAGE}{prev_page}" if page > 0 else "noop"),
+        InlineKeyboardButton(text="◀️", callback_data=f"{CB_PAGE}{page-1}" if page > 0 else "noop"),
         InlineKeyboardButton(text=f"Стр. {page+1}/{total_pages}", callback_data="noop"),
-        InlineKeyboardButton(text="▶️", callback_data=f"{CB_PAGE}{next_page}" if page < total_pages - 1 else "noop"),
+        InlineKeyboardButton(text="▶️", callback_data=f"{CB_PAGE}{page+1}" if page < total_pages-1 else "noop"),
     ])
-
-    # назад
     rows.append([InlineKeyboardButton(text="↩️ Назад", callback_data=CB_BACK)])
-
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+# ---------- aiogram объекты ----------
+bot: Bot | None = None
+dp = Dispatcher()
 
 # ---------- хэндлеры ----------
 @dp.message(CommandStart())
 async def on_start(message: Message):
-    # если нужна обязательная проверка подписки — добавь свою кнопку "Проверить подписку" и хэндлер,
-    # здесь ради простоты сразу даём переход к материалам
     await message.answer(
-        "Привет! 👋 Нажмите кнопку, чтобы открыть материалы.",
+        "Привет! 👋 Нажми кнопку, чтобы открыть материалы.",
         reply_markup=make_after_check_kb()
     )
 
 @dp.message(Command("help"))
 async def on_help(message: Message):
-    await message.answer("Нажмите «📚 Смотреть материалы», затем выберите пункт из меню. При нажатии бот пришлёт файл(ы).")
+    await message.answer("Нажмите «📚 Смотреть материалы», выберите пункт и бот пришлёт файл(ы).")
 
 @dp.callback_query(F.data == CB_VIEW)
 async def open_menu(callback: CallbackQuery):
@@ -138,11 +122,10 @@ async def open_menu(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith(CB_PAGE))
 async def change_page(callback: CallbackQuery):
-    data = callback.data
     try:
-        page = int(data.removeprefix(CB_PAGE))
+        page = int(callback.data.removeprefix(CB_PAGE))
     except ValueError:
-        await callback.answer("Некорректная страница", show_alert=True)
+        await callback.answer("Ошибка страницы", show_alert=True)
         return
     kb = paginate_kb(MATERIALS, page)
     try:
@@ -153,20 +136,18 @@ async def change_page(callback: CallbackQuery):
 
 @dp.callback_query(F.data == CB_BACK)
 async def back_main(callback: CallbackQuery):
-    await callback.message.answer("Готово. Нажмите «📚 Смотреть материалы».", reply_markup=make_after_check_kb())
+    await callback.message.answer("Нажмите «📚 Смотреть материалы».", reply_markup=make_after_check_kb())
     await callback.answer()
 
 @dp.callback_query(F.data.startswith(CB_ITEM))
 async def send_material(callback: CallbackQuery):
-    data = callback.data
     try:
-        idx = int(data.removeprefix(CB_ITEM))
+        idx = int(callback.data.removeprefix(CB_ITEM))
     except ValueError:
-        await callback.answer("Некорректный выбор", show_alert=True)
+        await callback.answer("Ошибка выбора", show_alert=True)
         return
-
     if not (0 <= idx < len(MATERIALS)):
-        await callback.answer("Пункт не найден", show_alert=True)
+        await callback.answer("Материал не найден", show_alert=True)
         return
 
     title, paths = MATERIALS[idx]
@@ -182,21 +163,11 @@ async def send_material(callback: CallbackQuery):
             logging.exception(f"Ошибка отправки {path}: {e}")
             await callback.message.answer(f"Не удалось отправить: {path}")
 
-    await callback.answer("Готово" if sent_any else "Не найдено ни одного файла")
-
-# (опционально) быстрая проверка конфигурации
-@dp.message(Command("debug"))
-async def debug(message: Message):
-    lines = []
-    for title, paths in MATERIALS:
-        exists = [("OK" if os.path.exists(p) else "NO") + f" {p}" for p in paths]
-        lines.append(f"{title}: " + " | ".join(exists))
-    await message.answer("\n".join(lines) or "Список пуст")
+    await callback.answer("Готово" if sent_any else "Файлы не найдены")
 
 # ---------- точка входа ----------
 async def main():
     global bot
-    # SSL + IPv4 (в основном актуально для Windows; на Render тоже ок)
     ssl_ctx = ssl.create_default_context(cafile=certifi.where())
     session = AiohttpSession()
     session._connector_init = {
@@ -207,8 +178,12 @@ async def main():
 
     bot = Bot(BOT_TOKEN, session=session)
 
-    logger.info("Bot is running...")
-    logger.info("Материалы: " + " | ".join([f"{t} -> {', '.join(p)}" for t, p in MATERIALS]))
+    me = await bot.me()
+    logger.info(f"Запущен бот @{me.username} (id={me.id})")
+
+    # ВАЖНО: убрать вебхук и очистить старые апдейты
+    await bot.delete_webhook(drop_pending_updates=True)
+
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 if __name__ == "__main__":
